@@ -4,10 +4,11 @@ A lightweight, read-only Markdown viewer built with React + Vite and packaged as
 
 ## Features
 
-- Open local `.md` / `.markdown` files
-- Drag-and-drop Markdown files
-- PWA file handling via `file_handlers` + `launchQueue`
+- Drag-and-drop `.md` / `.markdown` files directly into the viewer
+- PWA file handling via `file_handlers` + `launchQueue` for OS-level file association
+- Live reload when a persistent local file handle is available
 - Left-side document outline generated from headings
+- Active outline item follows the current scroll position
 - KaTeX math rendering (`$...$` / `$$...$$`)
 - Mermaid diagrams via fenced `mermaid` blocks
 - Syntax highlighting with highlight.js
@@ -15,6 +16,8 @@ A lightweight, read-only Markdown viewer built with React + Vite and packaged as
 - Responsive layout and automatic dark mode
 - Offline support through the service worker
 - Automatic GitHub Pages deployment from `main`
+
+The UI intentionally has no editor or file-open toolbar: the main content area is dedicated to previewing Markdown. Use OS file association or drag-and-drop to load documents.
 
 ## Local development
 
@@ -61,6 +64,12 @@ On Chromium-based desktop browsers that support the File Handling API, launching
 You may still need to choose **Markdown PWA Viewer** as the default application for Markdown files in your operating system after installation.
 
 > File association support is browser/OS dependent. Chromium desktop currently provides the relevant PWA File Handling API; Safari does not provide equivalent support.
+
+## Live reload
+
+When the viewer receives a `FileSystemFileHandle` (for example from PWA file association, or compatible Chromium drag-and-drop), it checks the file metadata once per second. If the file changes on disk, the rendered Markdown refreshes automatically.
+
+If the browser only exposes a one-time `File` snapshot for a drag operation, the document still renders normally but cannot be watched for later changes.
 
 ## Markdown examples
 
