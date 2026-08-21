@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import mermaid from 'mermaid'
 import { FileText, FolderOpen, Menu, X } from 'lucide-react'
 import { renderMarkdown } from './markdown'
 
@@ -52,13 +51,6 @@ console.log(hello)
 \`\`\`
 `
 
-mermaid.initialize({
-  startOnLoad: false,
-  securityLevel: 'strict',
-  theme: 'default',
-  fontFamily: 'inherit',
-})
-
 async function readHandle(handle: FileSystemFileHandle) {
   const file = await handle.getFile()
   return { name: file.name, text: await file.text() }
@@ -102,10 +94,26 @@ export default function App() {
     })))
 
     const diagrams = Array.from(root.querySelectorAll<HTMLElement>('.mermaid'))
-    if (diagrams.length) {
-      mermaid.run({ nodes: diagrams }).catch((error) => {
+    if (!diagrams.length) return
+
+    let cancelled = false
+    void import('mermaid')
+      .then(({ default: mermaid }) => {
+        if (cancelled) return
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          theme: 'default',
+          fontFamily: 'inherit',
+        })
+        return mermaid.run({ nodes: diagrams })
+      })
+      .catch((error) => {
         console.error('Mermaid render failed:', error)
       })
+
+    return () => {
+      cancelled = true
     }
   }, [html])
 
