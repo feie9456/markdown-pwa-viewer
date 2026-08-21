@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Menu, X } from 'lucide-react'
+import { History, Menu, X } from 'lucide-react'
 import { renderMarkdown } from './markdown'
+import {
+  getDocuments,
+  getRecentDocuments,
+  getSession,
+  putDocument,
+  putSession,
+  type StoredDocument,
+} from './storage'
 
 type OutlineItem = {
   id: string
@@ -8,9 +16,8 @@ type OutlineItem = {
   level: number
 }
 
-type FileSnapshot = {
-  lastModified: number
-  size: number
+type ViewerTab = StoredDocument & {
+  watching: boolean
 }
 
 type LaunchParamsLike = {
@@ -25,12 +32,25 @@ type DataTransferItemWithHandle = DataTransferItem & {
   getAsFileSystemHandle?: () => Promise<FileSystemHandle | null>
 }
 
+type FileHandleWithCapabilities = FileSystemFileHandle & {
+  queryPermission?: (descriptor?: { mode: 'read' }) => Promise<PermissionState>
+  requestPermission?: (descriptor?: { mode: 'read' }) => Promise<PermissionState>
+  isSameEntry?: (other: FileSystemHandle) => Promise<boolean>
+}
+
+type HeadingPosition = {
+  id: string
+  y: number
+}
+
 const welcome = `# Markdown PWA Viewer
 
-Drag a local \`.md\` file into this window, or install this app and associate Markdown files with it.
+Drag one or more local \`.md\` files into this window, or install this app and associate Markdown files with it.
 
 ## Features
 
+- Multiple tabs
+- Recent files restored from IndexedDB
 - GitHub-flavored Markdown basics
 - $\\KaTeX$ formulas
 - Mermaid diagrams
@@ -61,125 +81,402 @@ console.log(hello)
 \`\`\`
 `
 
-async function readHandle(handle: FileSystemFileHandle) {
-  const file = await handle.getFile()
-  return {
-    name: file.name,
-    text: await file.text(),
-    lastModified: file.lastModified,
-    size: file.size,
+const toStoredDocument = (tab: ViewerTab): StoredDocument => {
+  const { watching: _watching, ...document } = tab
+  return document
+}
+
+async function canReadHandle(handle: FileSystemFileHandle, requestPermission: boolean) {
+  const capable = handle as FileHandleWithCapabilities
+  if (!capable.queryPermission) return true
+
+  const state = await capable.queryPermission({ mode: 'read' })
+  if (state === 'granted') return true
+  if (!requestPermission || !capable.requestPermission) return false
+  return await capable.requestPermission({ mode: 'read' }) === 'granted'
+}
+
+async function hydrateDocument(document: StoredDocument, requestPermission = false): Promise<ViewerTab> {
+  if (!document.handle) return { ...document, watching: false }
+
+  try {
+    if (!await canReadHandle(document.handle, requestPermission)) {
+      return { ...document, watching: false }
+    }
+
+    const file = await document.handle.getFile()
+    return {
+      ...document,
+      name: file.name,
+      source: await file.text(),
+      size: file.size,
+      lastModified: file.lastModified,
+      watching: true,
+    }
+  } catch (error) {
+    console.warn(`Unable to restore ${document.name} from its file handle:`, error)
+    return { ...document, watching: false }
   }
 }
 
 export default function App() {
-  const [source, setSource] = useState(welcome)
+  const [tabs, setTabs] = useState<ViewerTab[]>([])
+  const [activeTabId, setActiveTabId] = useState<string | null>(null)
+  const [recentDocuments, setRecentDocuments] = useState<StoredDocument[]>([])
   const [outline, setOutline] = useState<OutlineItem[]>([])
   const [activeHeading, setActiveHeading] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [watching, setWatching] = useState(false)
+  const [recentOpen, setRecentOpen] = useState(false)
+  const [hydrated, setHydrated] = useState(false)
+
   const contentRef = useRef<HTMLElement>(null)
   const sidebarRef = useRef<HTMLElement>(null)
+  const tabBarRef = useRef<HTMLDivElement>(null)
   const activeOutlineRef = useRef<HTMLAnchorElement>(null)
-  const endSentinelRef = useRef<HTMLDivElement>(null)
-  const activeHandleRef = useRef<FileSystemFileHandle | null>(null)
-  const fileSnapshotRef = useRef<FileSnapshot | null>(null)
+  const recentMenuRef = useRef<HTMLDivElement>(null)
+  const tabsRef = useRef<ViewerTab[]>([])
+  const activeTabIdRef = useRef<string | null>(null)
+  const scrollByIdRef = useRef<Record<string, number>>({})
+  const checkingTabsRef = useRef(new Set<string>())
+
+  const activeTab = useMemo(
+    () => tabs.find((tab) => tab.id === activeTabId) ?? null,
+    [tabs, activeTabId],
+  )
+  const source = activeTab?.source ?? welcome
   const html = useMemo(() => renderMarkdown(source), [source])
+  const tabIdsKey = tabs.map((tab) => tab.id).join('|')
 
-  const applyLoadedFile = (name: string, text: string) => {
-    setSource(text)
-    document.title = `${name} · Markdown Viewer`
+  useEffect(() => {
+    tabsRef.current = tabs
+  }, [tabs])
+
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId
+  }, [activeTabId])
+
+  const persistSession = async () => {
+    await putSession({
+      key: 'session',
+      openIds: tabsRef.current.map((tab) => tab.id),
+      activeId: activeTabIdRef.current,
+      scrollById: { ...scrollByIdRef.current },
+    })
   }
 
-  const loadFile = async (file: File) => {
-    activeHandleRef.current = null
-    fileSnapshotRef.current = null
-    setWatching(false)
-    applyLoadedFile(file.name, await file.text())
-  }
-
-  const loadHandle = async (handle: FileSystemFileHandle) => {
-    const loaded = await readHandle(handle)
-    activeHandleRef.current = handle
-    fileSnapshotRef.current = {
-      lastModified: loaded.lastModified,
-      size: loaded.size,
-    }
-    setWatching(true)
-    applyLoadedFile(loaded.name, loaded.text)
-  }
-
-  const handleDrop = async (dataTransfer: DataTransfer) => {
-    const item = dataTransfer.items[0] as DataTransferItemWithHandle | undefined
-
-    if (item?.getAsFileSystemHandle) {
-      try {
-        const handle = await item.getAsFileSystemHandle()
-        if (handle?.kind === 'file' && /\.(md|markdown)$/i.test(handle.name)) {
-          await loadHandle(handle as FileSystemFileHandle)
-          return
-        }
-      } catch (error) {
-        console.warn('Unable to get a persistent file handle from drag-and-drop:', error)
-      }
-    }
-
-    const file = dataTransfer.files[0]
-    if (file && /\.(md|markdown)$/i.test(file.name)) await loadFile(file)
+  const refreshRecents = async () => {
+    setRecentDocuments(await getRecentDocuments(20))
   }
 
   useEffect(() => {
-    const launchQueue = (window as Window & { launchQueue?: LaunchQueueLike }).launchQueue
-    launchQueue?.setConsumer(async ({ files }) => {
-      const handle = files[0]
-      if (handle) await loadHandle(handle)
-    })
+    let cancelled = false
+
+    void (async () => {
+      try {
+        const [session, recents] = await Promise.all([
+          getSession(),
+          getRecentDocuments(20),
+        ])
+        if (cancelled) return
+
+        setRecentDocuments(recents)
+        scrollByIdRef.current = session?.scrollById ?? {}
+
+        if (session?.openIds.length) {
+          const stored = await getDocuments(session.openIds)
+          const byId = new Map(stored.map((document) => [document.id, document]))
+          const ordered = session.openIds
+            .map((id) => byId.get(id))
+            .filter((document): document is StoredDocument => Boolean(document))
+          const restored = await Promise.all(ordered.map((document) => hydrateDocument(document)))
+          if (cancelled) return
+
+          setTabs(restored)
+          const restoredActive = session.activeId && restored.some((tab) => tab.id === session.activeId)
+            ? session.activeId
+            : restored[0]?.id ?? null
+          setActiveTabId(restoredActive)
+
+          for (const tab of restored) {
+            if (tab.watching) void putDocument(toStoredDocument(tab))
+          }
+        }
+      } catch (error) {
+        console.warn('Unable to restore the previous Markdown session:', error)
+      } finally {
+        if (!cancelled) setHydrated(true)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
-    let checking = false
+    if (!hydrated) return
+    const timeoutId = window.setTimeout(() => {
+      void persistSession()
+    }, 80)
+    return () => window.clearTimeout(timeoutId)
+  }, [hydrated, tabIdsKey, activeTabId])
 
-    const refreshIfChanged = async () => {
-      const handle = activeHandleRef.current
-      if (!handle || checking) return
+  useEffect(() => {
+    if (!hydrated) return
 
-      checking = true
-      try {
-        const file = await handle.getFile()
-        const previous = fileSnapshotRef.current
-        const changed = !previous
-          || file.lastModified !== previous.lastModified
-          || file.size !== previous.size
+    let saveTimer = 0
+    const onScroll = () => {
+      const id = activeTabIdRef.current
+      if (!id) return
+      scrollByIdRef.current[id] = window.scrollY
+      window.clearTimeout(saveTimer)
+      saveTimer = window.setTimeout(() => {
+        void persistSession()
+      }, 350)
+    }
 
-        if (!changed) return
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') void persistSession()
+    }
 
-        const text = await file.text()
-        fileSnapshotRef.current = {
-          lastModified: file.lastModified,
-          size: file.size,
+    window.addEventListener('scroll', onScroll, { passive: true })
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.clearTimeout(saveTimer)
+      window.removeEventListener('scroll', onScroll)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [hydrated])
+
+  useEffect(() => {
+    document.title = activeTab ? `${activeTab.name} · Markdown Viewer` : 'Markdown PWA Viewer'
+  }, [activeTab?.id, activeTab?.name])
+
+  useEffect(() => {
+    if (!activeTabId) return
+    const targetY = scrollByIdRef.current[activeTabId] ?? 0
+    const frame = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: targetY, left: 0, behavior: 'auto' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [activeTabId])
+
+  const selectTab = (id: string) => {
+    const current = activeTabIdRef.current
+    if (current) scrollByIdRef.current[current] = window.scrollY
+    setActiveTabId(id)
+  }
+
+  const closeTab = (id: string) => {
+    const currentTabs = tabsRef.current
+    const index = currentTabs.findIndex((tab) => tab.id === id)
+    if (index < 0) return
+
+    if (activeTabIdRef.current) {
+      scrollByIdRef.current[activeTabIdRef.current] = window.scrollY
+    }
+
+    const remaining = currentTabs.filter((tab) => tab.id !== id)
+    delete scrollByIdRef.current[id]
+    setTabs(remaining)
+
+    if (activeTabIdRef.current === id) {
+      const replacement = remaining[Math.min(index, remaining.length - 1)]?.id ?? null
+      setActiveTabId(replacement)
+    }
+  }
+
+  const findMatchingStoredDocument = async (handle: FileSystemFileHandle | null, file: File) => {
+    const candidates = await getRecentDocuments(50)
+
+    if (handle) {
+      const capable = handle as FileHandleWithCapabilities
+      if (capable.isSameEntry) {
+        for (const candidate of candidates) {
+          if (!candidate.handle) continue
+          try {
+            if (await capable.isSameEntry(candidate.handle)) return candidate
+          } catch {
+            // Fall through to metadata matching.
+          }
         }
-        setSource((current) => current === text ? current : text)
-        document.title = `${file.name} · Markdown Viewer`
-      } catch (error) {
-        console.warn('Unable to check Markdown file for changes:', error)
-      } finally {
-        checking = false
+      }
+    }
+
+    return candidates.find((candidate) =>
+      candidate.name === file.name
+      && candidate.size === file.size
+      && candidate.lastModified === file.lastModified,
+    ) ?? null
+  }
+
+  const upsertTab = (tab: ViewerTab, activate = true) => {
+    setTabs((current) => {
+      const existingIndex = current.findIndex((item) => item.id === tab.id)
+      if (existingIndex < 0) return [...current, tab]
+      const next = [...current]
+      next[existingIndex] = tab
+      return next
+    })
+    if (activate) selectTab(tab.id)
+  }
+
+  const openHandle = async (handle: FileSystemFileHandle, activate = true) => {
+    const file = await handle.getFile()
+    if (!/\.(md|markdown)$/i.test(file.name)) return null
+
+    const existing = await findMatchingStoredDocument(handle, file)
+    const tab: ViewerTab = {
+      id: existing?.id ?? crypto.randomUUID(),
+      name: file.name,
+      source: await file.text(),
+      size: file.size,
+      lastModified: file.lastModified,
+      lastOpenedAt: Date.now(),
+      handle,
+      watching: true,
+    }
+
+    await putDocument(toStoredDocument(tab))
+    upsertTab(tab, activate)
+    await refreshRecents()
+    return tab.id
+  }
+
+  const openFileSnapshot = async (file: File, activate = true) => {
+    if (!/\.(md|markdown)$/i.test(file.name)) return null
+
+    const existing = await findMatchingStoredDocument(null, file)
+    const tab: ViewerTab = {
+      id: existing?.id ?? crypto.randomUUID(),
+      name: file.name,
+      source: await file.text(),
+      size: file.size,
+      lastModified: file.lastModified,
+      lastOpenedAt: Date.now(),
+      watching: false,
+    }
+
+    await putDocument(toStoredDocument(tab))
+    upsertTab(tab, activate)
+    await refreshRecents()
+    return tab.id
+  }
+
+  const openRecentDocument = async (document: StoredDocument) => {
+    setRecentOpen(false)
+
+    const existingTab = tabsRef.current.find((tab) => tab.id === document.id)
+    if (existingTab) {
+      const touched = { ...existingTab, lastOpenedAt: Date.now() }
+      upsertTab(touched)
+      await putDocument(toStoredDocument(touched))
+      await refreshRecents()
+      return
+    }
+
+    const restored = await hydrateDocument({ ...document, lastOpenedAt: Date.now() }, true)
+    await putDocument(toStoredDocument(restored))
+    upsertTab(restored)
+    await refreshRecents()
+  }
+
+  const handleDrop = async (dataTransfer: DataTransfer) => {
+    const pending = Array.from(dataTransfer.items)
+      .filter((item) => item.kind === 'file')
+      .map((rawItem) => {
+        const item = rawItem as DataTransferItemWithHandle
+        return {
+          file: rawItem.getAsFile(),
+          handlePromise: item.getAsFileSystemHandle
+            ? item.getAsFileSystemHandle().catch(() => null)
+            : Promise.resolve(null),
+        }
+      })
+
+    let lastOpenedId: string | null = null
+    for (const entry of pending) {
+      const handle = await entry.handlePromise
+      if (handle?.kind === 'file' && /\.(md|markdown)$/i.test(handle.name)) {
+        lastOpenedId = await openHandle(handle as FileSystemFileHandle, false) ?? lastOpenedId
+      } else if (entry.file && /\.(md|markdown)$/i.test(entry.file.name)) {
+        lastOpenedId = await openFileSnapshot(entry.file, false) ?? lastOpenedId
+      }
+    }
+
+    if (lastOpenedId) selectTab(lastOpenedId)
+  }
+
+  useEffect(() => {
+    if (!hydrated) return
+    const launchQueue = (window as Window & { launchQueue?: LaunchQueueLike }).launchQueue
+    launchQueue?.setConsumer(async ({ files }) => {
+      let lastOpenedId: string | null = null
+      for (const handle of files) {
+        lastOpenedId = await openHandle(handle, false) ?? lastOpenedId
+      }
+      if (lastOpenedId) selectTab(lastOpenedId)
+    })
+  }, [hydrated])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const refreshOpenHandles = async () => {
+      for (const tab of tabsRef.current) {
+        if (cancelled || !tab.handle || !tab.watching || checkingTabsRef.current.has(tab.id)) continue
+
+        checkingTabsRef.current.add(tab.id)
+        try {
+          const file = await tab.handle.getFile()
+          if (file.lastModified === tab.lastModified && file.size === tab.size) continue
+
+          const updated: ViewerTab = {
+            ...tab,
+            name: file.name,
+            source: await file.text(),
+            size: file.size,
+            lastModified: file.lastModified,
+          }
+          setTabs((current) => current.map((item) => item.id === updated.id ? updated : item))
+          setRecentDocuments((current) => current.map((item) => item.id === updated.id ? toStoredDocument(updated) : item))
+          void putDocument(toStoredDocument(updated))
+        } catch (error) {
+          console.warn(`Unable to live-reload ${tab.name}:`, error)
+          setTabs((current) => current.map((item) => item.id === tab.id ? { ...item, watching: false } : item))
+        } finally {
+          checkingTabsRef.current.delete(tab.id)
+        }
       }
     }
 
     const intervalId = window.setInterval(() => {
-      void refreshIfChanged()
+      void refreshOpenHandles()
     }, 1000)
 
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') void refreshIfChanged()
+      if (document.visibilityState === 'visible') void refreshOpenHandles()
     }
 
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
+      cancelled = true
       window.clearInterval(intervalId)
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [])
+
+  useEffect(() => {
+    if (!recentOpen) return
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (!recentMenuRef.current?.contains(target)) setRecentOpen(false)
+    }
+
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [recentOpen])
 
   useEffect(() => {
     const root = contentRef.current
@@ -197,103 +494,76 @@ export default function App() {
       return
     }
 
-    const activationLine = 32
-    const passedHeadings = new Set<string>()
-    let atDocumentEnd = false
+    let positions: HeadingPosition[] = []
+    let scrollFrame = 0
+    let measureFrame = 0
 
-    const sentinels = headings.map((heading) => {
-      const sentinel = document.createElement('span')
-      sentinel.dataset.headingId = heading.id
-      sentinel.setAttribute('aria-hidden', 'true')
-      Object.assign(sentinel.style, {
-        position: 'absolute',
-        top: '0',
-        left: '0',
-        width: '1px',
-        height: '1px',
-        pointerEvents: 'none',
-      })
-      heading.prepend(sentinel)
-      return sentinel
-    })
+    const activationOffset = () => (tabBarRef.current?.offsetHeight ?? 40) + 24
 
     const updateActiveHeading = () => {
-      if (atDocumentEnd && document.documentElement.scrollHeight > window.innerHeight + 1) {
-        const lastId = headings.at(-1)?.id
-        if (lastId) setActiveHeading((current) => current === lastId ? current : lastId)
+      scrollFrame = 0
+      if (!positions.length) return
+
+      if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2) {
+        const last = positions[positions.length - 1]
+        setActiveHeading((current) => current === last.id ? current : last.id)
         return
       }
 
-      let nextActive = headings[0].id
-      for (const heading of headings) {
-        if (passedHeadings.has(heading.id)) nextActive = heading.id
-      }
-      setActiveHeading((current) => current === nextActive ? current : nextActive)
-    }
+      const targetY = window.scrollY + activationOffset()
+      let low = 0
+      let high = positions.length - 1
+      let answer = 0
 
-    const syncFromLayout = () => {
-      passedHeadings.clear()
-      for (let index = 0; index < sentinels.length; index += 1) {
-        if (sentinels[index].getBoundingClientRect().top < activationLine) {
-          passedHeadings.add(headings[index].id)
+      while (low <= high) {
+        const middle = Math.floor((low + high) / 2)
+        if (positions[middle].y <= targetY) {
+          answer = middle
+          low = middle + 1
         } else {
-          break
+          high = middle - 1
         }
       }
+
+      const nextId = positions[answer].id
+      setActiveHeading((current) => current === nextId ? current : nextId)
+    }
+
+    const measureHeadings = () => {
+      measureFrame = 0
+      positions = headings.map((heading) => ({
+        id: heading.id,
+        y: heading.getBoundingClientRect().top + window.scrollY,
+      }))
       updateActiveHeading()
     }
 
-    syncFromLayout()
+    const scheduleScrollUpdate = () => {
+      if (scrollFrame) return
+      scrollFrame = window.requestAnimationFrame(updateActiveHeading)
+    }
 
-    const headingObserver = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        const target = entry.target as HTMLElement
-        const headingId = target.dataset.headingId
-        if (!headingId) continue
+    const scheduleMeasure = () => {
+      if (measureFrame) return
+      measureFrame = window.requestAnimationFrame(measureHeadings)
+    }
 
-        if (!entry.isIntersecting && entry.boundingClientRect.top < activationLine) {
-          passedHeadings.add(headingId)
-        } else {
-          passedHeadings.delete(headingId)
-        }
-      }
-      updateActiveHeading()
-    }, {
-      root: null,
-      rootMargin: `-${activationLine}px 0px 0px 0px`,
-      threshold: 0,
-    })
+    measureHeadings()
+    window.addEventListener('scroll', scheduleScrollUpdate, { passive: true })
+    window.addEventListener('resize', scheduleMeasure)
 
-    sentinels.forEach((sentinel) => headingObserver.observe(sentinel))
-
-    const endSentinel = endSentinelRef.current
-    const endObserver = endSentinel
-      ? new IntersectionObserver(([entry]) => {
-          atDocumentEnd = Boolean(entry?.isIntersecting)
-          updateActiveHeading()
-        }, { root: null, threshold: 0 })
-      : null
-
-    if (endSentinel && endObserver) endObserver.observe(endSentinel)
-
-    let resizeFrame = 0
-    const resizeObserver = new ResizeObserver(() => {
-      if (resizeFrame) return
-      resizeFrame = window.requestAnimationFrame(() => {
-        resizeFrame = 0
-        syncFromLayout()
-      })
-    })
+    const resizeObserver = new ResizeObserver(scheduleMeasure)
     resizeObserver.observe(root)
+    if (tabBarRef.current) resizeObserver.observe(tabBarRef.current)
 
     return () => {
-      headingObserver.disconnect()
-      endObserver?.disconnect()
       resizeObserver.disconnect()
-      if (resizeFrame) window.cancelAnimationFrame(resizeFrame)
-      sentinels.forEach((sentinel) => sentinel.remove())
+      if (scrollFrame) window.cancelAnimationFrame(scrollFrame)
+      if (measureFrame) window.cancelAnimationFrame(measureFrame)
+      window.removeEventListener('scroll', scheduleScrollUpdate)
+      window.removeEventListener('resize', scheduleMeasure)
     }
-  }, [html])
+  }, [html, activeTabId])
 
   useEffect(() => {
     const sidebar = sidebarRef.current
@@ -377,7 +647,7 @@ export default function App() {
         <div className="sidebar-header">
           <strong>Outline</strong>
           <div className="sidebar-actions">
-            {watching && <span className="watch-status" title="Watching for external file changes"><span className="watch-dot" />Live</span>}
+            {activeTab?.watching && <span className="watch-status" title="Watching for external file changes"><span className="watch-dot" />Live</span>}
             <button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close outline"><X size={19} /></button>
           </div>
         </div>
@@ -404,11 +674,69 @@ export default function App() {
         </nav>
       </aside>
 
+      <div ref={tabBarRef} className="tabbar">
+        <div ref={recentMenuRef} className="recent-nav">
+          <button
+            className={`recent-toggle${recentOpen ? ' active' : ''}`}
+            onClick={() => setRecentOpen((open) => !open)}
+            aria-expanded={recentOpen}
+            aria-label="Recent files"
+            title="Recent files"
+          >
+            <History size={16} />
+            <span>Recent</span>
+          </button>
+
+          {recentOpen && (
+            <div className="recent-menu">
+              <div className="recent-menu-title">Recent files</div>
+              {recentDocuments.length ? recentDocuments.map((document) => (
+                <button key={document.id} className="recent-menu-item" onClick={() => void openRecentDocument(document)}>
+                  <span className="recent-file-name">{document.name}</span>
+                  <span className="recent-file-time">{new Date(document.lastOpenedAt).toLocaleString()}</span>
+                </button>
+              )) : <div className="recent-empty">No recent files</div>}
+            </div>
+          )}
+        </div>
+
+        <div className="tabs-strip" role="tablist" aria-label="Open Markdown files">
+          {tabs.map((tab) => {
+            const isActive = tab.id === activeTabId
+            return (
+              <div
+                key={tab.id}
+                role="tab"
+                tabIndex={0}
+                aria-selected={isActive}
+                className={`tab-item${isActive ? ' active' : ''}`}
+                title={tab.name}
+                onClick={() => selectTab(tab.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') selectTab(tab.id)
+                }}
+              >
+                <span className="tab-name">{tab.name}</span>
+                <button
+                  className="tab-close"
+                  aria-label={`Close ${tab.name}`}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    closeTab(tab.id)
+                  }}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
       {sidebarOpen && <button className="backdrop mobile-only" aria-label="Close outline" onClick={() => setSidebarOpen(false)} />}
 
       <main className="viewer">
         <article ref={contentRef} className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />
-        <div ref={endSentinelRef} aria-hidden="true" />
       </main>
     </div>
   )
