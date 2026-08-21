@@ -78,7 +78,9 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [watching, setWatching] = useState(false)
   const contentRef = useRef<HTMLElement>(null)
+  const sidebarRef = useRef<HTMLElement>(null)
   const activeOutlineRef = useRef<HTMLAnchorElement>(null)
+  const endSentinelRef = useRef<HTMLDivElement>(null)
   const activeHandleRef = useRef<FileSystemFileHandle | null>(null)
   const fileSnapshotRef = useRef<FileSnapshot | null>(null)
   const html = useMemo(() => renderMarkdown(source), [source])
@@ -195,41 +197,120 @@ export default function App() {
       return
     }
 
-    let frame = 0
-    const updateActiveHeading = () => {
-      frame = 0
-      const activationLine = 32
-      let nextActive = headings[0].id
+    const activationLine = 32
+    const passedHeadings = new Set<string>()
+    let atDocumentEnd = false
 
+    const sentinels = headings.map((heading) => {
+      const sentinel = document.createElement('span')
+      sentinel.dataset.headingId = heading.id
+      sentinel.setAttribute('aria-hidden', 'true')
+      Object.assign(sentinel.style, {
+        position: 'absolute',
+        top: '0',
+        left: '0',
+        width: '1px',
+        height: '1px',
+        pointerEvents: 'none',
+      })
+      heading.prepend(sentinel)
+      return sentinel
+    })
+
+    const updateActiveHeading = () => {
+      if (atDocumentEnd && document.documentElement.scrollHeight > window.innerHeight + 1) {
+        const lastId = headings.at(-1)?.id
+        if (lastId) setActiveHeading((current) => current === lastId ? current : lastId)
+        return
+      }
+
+      let nextActive = headings[0].id
       for (const heading of headings) {
-        if (heading.getBoundingClientRect().top <= activationLine) {
-          nextActive = heading.id
+        if (passedHeadings.has(heading.id)) nextActive = heading.id
+      }
+      setActiveHeading((current) => current === nextActive ? current : nextActive)
+    }
+
+    const syncFromLayout = () => {
+      passedHeadings.clear()
+      for (let index = 0; index < sentinels.length; index += 1) {
+        if (sentinels[index].getBoundingClientRect().top < activationLine) {
+          passedHeadings.add(headings[index].id)
         } else {
           break
         }
       }
-
-      setActiveHeading((current) => current === nextActive ? current : nextActive)
+      updateActiveHeading()
     }
 
-    const scheduleUpdate = () => {
-      if (frame) return
-      frame = window.requestAnimationFrame(updateActiveHeading)
-    }
+    syncFromLayout()
 
-    updateActiveHeading()
-    window.addEventListener('scroll', scheduleUpdate, { passive: true })
-    window.addEventListener('resize', scheduleUpdate)
+    const headingObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const target = entry.target as HTMLElement
+        const headingId = target.dataset.headingId
+        if (!headingId) continue
+
+        if (!entry.isIntersecting && entry.boundingClientRect.top < activationLine) {
+          passedHeadings.add(headingId)
+        } else {
+          passedHeadings.delete(headingId)
+        }
+      }
+      updateActiveHeading()
+    }, {
+      root: null,
+      rootMargin: `-${activationLine}px 0px 0px 0px`,
+      threshold: 0,
+    })
+
+    sentinels.forEach((sentinel) => headingObserver.observe(sentinel))
+
+    const endSentinel = endSentinelRef.current
+    const endObserver = endSentinel
+      ? new IntersectionObserver(([entry]) => {
+          atDocumentEnd = Boolean(entry?.isIntersecting)
+          updateActiveHeading()
+        }, { root: null, threshold: 0 })
+      : null
+
+    if (endSentinel && endObserver) endObserver.observe(endSentinel)
+
+    let resizeFrame = 0
+    const resizeObserver = new ResizeObserver(() => {
+      if (resizeFrame) return
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = 0
+        syncFromLayout()
+      })
+    })
+    resizeObserver.observe(root)
 
     return () => {
-      if (frame) window.cancelAnimationFrame(frame)
-      window.removeEventListener('scroll', scheduleUpdate)
-      window.removeEventListener('resize', scheduleUpdate)
+      headingObserver.disconnect()
+      endObserver?.disconnect()
+      resizeObserver.disconnect()
+      if (resizeFrame) window.cancelAnimationFrame(resizeFrame)
+      sentinels.forEach((sentinel) => sentinel.remove())
     }
   }, [html])
 
   useEffect(() => {
-    activeOutlineRef.current?.scrollIntoView({ block: 'nearest' })
+    const sidebar = sidebarRef.current
+    const item = activeOutlineRef.current
+    if (!sidebar || !item) return
+
+    const header = sidebar.querySelector<HTMLElement>('.sidebar-header')
+    const sidebarRect = sidebar.getBoundingClientRect()
+    const itemRect = item.getBoundingClientRect()
+    const topBoundary = sidebarRect.top + (header?.offsetHeight ?? 0) + 8
+    const bottomBoundary = sidebarRect.bottom - 8
+
+    if (itemRect.top < topBoundary) {
+      sidebar.scrollTop -= topBoundary - itemRect.top
+    } else if (itemRect.bottom > bottomBoundary) {
+      sidebar.scrollTop += itemRect.bottom - bottomBoundary
+    }
   }, [activeHeading])
 
   useEffect(() => {
@@ -292,7 +373,7 @@ export default function App() {
         <Menu size={20} />
       </button>
 
-      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
+      <aside ref={sidebarRef} className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
           <strong>Outline</strong>
           <div className="sidebar-actions">
@@ -327,6 +408,7 @@ export default function App() {
 
       <main className="viewer">
         <article ref={contentRef} className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />
+        <div ref={endSentinelRef} aria-hidden="true" />
       </main>
     </div>
   )
