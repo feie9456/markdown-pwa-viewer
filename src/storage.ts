@@ -63,8 +63,9 @@ function openDatabase() {
 async function putDocumentOnce(document: StoredDocument) {
   const db = await openDatabase()
   const transaction = db.transaction(DOCUMENTS_STORE, 'readwrite')
+  const done = transactionDone(transaction)
   transaction.objectStore(DOCUMENTS_STORE).put(document)
-  await transactionDone(transaction)
+  await done
 }
 
 export async function putDocument(document: StoredDocument) {
@@ -85,9 +86,10 @@ export async function getDocuments(ids: string[]) {
 
   const db = await openDatabase()
   const transaction = db.transaction(DOCUMENTS_STORE, 'readonly')
+  const done = transactionDone(transaction)
   const store = transaction.objectStore(DOCUMENTS_STORE)
   const documents = await Promise.all(ids.map((id) => requestToPromise(store.get(id))))
-  await transactionDone(transaction)
+  await done
 
   return documents.filter((document): document is StoredDocument => Boolean(document))
 }
@@ -95,8 +97,9 @@ export async function getDocuments(ids: string[]) {
 export async function getRecentDocuments(limit = 20) {
   const db = await openDatabase()
   const transaction = db.transaction(DOCUMENTS_STORE, 'readonly')
+  const done = transactionDone(transaction)
   const documents = await requestToPromise(transaction.objectStore(DOCUMENTS_STORE).getAll()) as StoredDocument[]
-  await transactionDone(transaction)
+  await done
 
   return documents
     .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
@@ -106,14 +109,16 @@ export async function getRecentDocuments(limit = 20) {
 export async function getSession() {
   const db = await openDatabase()
   const transaction = db.transaction(SESSION_STORE, 'readonly')
+  const done = transactionDone(transaction)
   const session = await requestToPromise(transaction.objectStore(SESSION_STORE).get('session')) as StoredSession | undefined
-  await transactionDone(transaction)
+  await done
   return session ?? null
 }
 
 export async function putSession(session: StoredSession) {
   const db = await openDatabase()
   const transaction = db.transaction(SESSION_STORE, 'readwrite')
+  const done = transactionDone(transaction)
   transaction.objectStore(SESSION_STORE).put(session)
-  await transactionDone(transaction)
+  await done
 }
