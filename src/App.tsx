@@ -38,11 +38,6 @@ type FileHandleWithCapabilities = FileSystemFileHandle & {
   isSameEntry?: (other: FileSystemHandle) => Promise<boolean>
 }
 
-type HeadingPosition = {
-  id: string
-  y: number
-}
-
 const welcome = `# Markdown PWA Viewer
 
 Drag one or more local \`.md\` files into this window, or install this app and associate Markdown files with it.
@@ -482,7 +477,10 @@ export default function App() {
     const root = contentRef.current
     if (!root) return
 
-    const headings = Array.from(root.querySelectorAll<HTMLHeadingElement>('h1, h2, h3, h4, h5, h6'))
+    const collectHeadings = () =>
+      Array.from(root.querySelectorAll<HTMLHeadingElement>('h1, h2, h3, h4, h5, h6'))
+
+    const headings = collectHeadings()
     setOutline(headings.map((heading) => ({
       id: heading.id,
       text: heading.textContent?.replace(/^#\s*/, '') || 'Untitled',
@@ -494,74 +492,60 @@ export default function App() {
       return
     }
 
-    let positions: HeadingPosition[] = []
     let scrollFrame = 0
-    let measureFrame = 0
 
-    const activationOffset = () => (tabBarRef.current?.offsetHeight ?? 40) + 24
+    const activationLine = () => (tabBarRef.current?.offsetHeight ?? 40) + 24
 
     const updateActiveHeading = () => {
       scrollFrame = 0
-      if (!positions.length) return
+      const liveHeadings = collectHeadings()
+      if (!liveHeadings.length) return
 
-      if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2) {
-        const last = positions[positions.length - 1]
-        setActiveHeading((current) => current === last.id ? current : last.id)
+      const firstRect = liveHeadings[0].getBoundingClientRect()
+      if (firstRect.width === 0 && firstRect.height === 0) return
+
+      const scrollRoot = document.scrollingElement ?? document.documentElement
+      const canScroll = scrollRoot.scrollHeight > scrollRoot.clientHeight + 1
+      const atBottom = canScroll
+        && scrollRoot.scrollTop + scrollRoot.clientHeight >= scrollRoot.scrollHeight - 2
+
+      if (atBottom) {
+        const lastId = liveHeadings[liveHeadings.length - 1].id
+        setActiveHeading((current) => current === lastId ? current : lastId)
         return
       }
 
-      const targetY = window.scrollY + activationOffset()
-      let low = 0
-      let high = positions.length - 1
-      let answer = 0
-
-      while (low <= high) {
-        const middle = Math.floor((low + high) / 2)
-        if (positions[middle].y <= targetY) {
-          answer = middle
-          low = middle + 1
+      const line = activationLine()
+      let nextId = liveHeadings[0].id
+      for (const heading of liveHeadings) {
+        if (heading.getBoundingClientRect().top <= line) {
+          nextId = heading.id
         } else {
-          high = middle - 1
+          break
         }
       }
 
-      const nextId = positions[answer].id
       setActiveHeading((current) => current === nextId ? current : nextId)
     }
 
-    const measureHeadings = () => {
-      measureFrame = 0
-      positions = headings.map((heading) => ({
-        id: heading.id,
-        y: heading.getBoundingClientRect().top + window.scrollY,
-      }))
-      updateActiveHeading()
-    }
-
-    const scheduleScrollUpdate = () => {
+    const scheduleUpdate = () => {
       if (scrollFrame) return
       scrollFrame = window.requestAnimationFrame(updateActiveHeading)
     }
 
-    const scheduleMeasure = () => {
-      if (measureFrame) return
-      measureFrame = window.requestAnimationFrame(measureHeadings)
-    }
+    updateActiveHeading()
+    window.addEventListener('scroll', scheduleUpdate, { passive: true })
+    window.addEventListener('resize', scheduleUpdate)
 
-    measureHeadings()
-    window.addEventListener('scroll', scheduleScrollUpdate, { passive: true })
-    window.addEventListener('resize', scheduleMeasure)
-
-    const resizeObserver = new ResizeObserver(scheduleMeasure)
+    const resizeObserver = new ResizeObserver(scheduleUpdate)
     resizeObserver.observe(root)
     if (tabBarRef.current) resizeObserver.observe(tabBarRef.current)
 
     return () => {
       resizeObserver.disconnect()
       if (scrollFrame) window.cancelAnimationFrame(scrollFrame)
-      if (measureFrame) window.cancelAnimationFrame(measureFrame)
-      window.removeEventListener('scroll', scheduleScrollUpdate)
-      window.removeEventListener('resize', scheduleMeasure)
+      window.removeEventListener('scroll', scheduleUpdate)
+      window.removeEventListener('resize', scheduleUpdate)
     }
   }, [html, activeTabId])
 
