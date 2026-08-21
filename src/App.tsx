@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, FolderOpen, Menu, X } from 'lucide-react'
+import { Menu, X } from 'lucide-react'
 import { renderMarkdown } from './markdown'
 
 type OutlineItem = {
@@ -21,9 +21,13 @@ type LaunchQueueLike = {
   setConsumer: (consumer: (params: LaunchParamsLike) => void | Promise<void>) => void
 }
 
+type DataTransferItemWithHandle = DataTransferItem & {
+  getAsFileSystemHandle?: () => Promise<FileSystemHandle | null>
+}
+
 const welcome = `# Markdown PWA Viewer
 
-Open a local \`.md\` file, drag one into this window, or install this app and associate Markdown files with it.
+Drag a local \`.md\` file into this window, or install this app and associate Markdown files with it.
 
 ## Features
 
@@ -69,7 +73,6 @@ async function readHandle(handle: FileSystemFileHandle) {
 
 export default function App() {
   const [source, setSource] = useState(welcome)
-  const [fileName, setFileName] = useState('Welcome.md')
   const [outline, setOutline] = useState<OutlineItem[]>([])
   const [activeHeading, setActiveHeading] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -82,7 +85,6 @@ export default function App() {
 
   const applyLoadedFile = (name: string, text: string) => {
     setSource(text)
-    setFileName(name)
     document.title = `${name} · Markdown Viewer`
   }
 
@@ -102,6 +104,25 @@ export default function App() {
     }
     setWatching(true)
     applyLoadedFile(loaded.name, loaded.text)
+  }
+
+  const handleDrop = async (dataTransfer: DataTransfer) => {
+    const item = dataTransfer.items[0] as DataTransferItemWithHandle | undefined
+
+    if (item?.getAsFileSystemHandle) {
+      try {
+        const handle = await item.getAsFileSystemHandle()
+        if (handle?.kind === 'file' && /\.(md|markdown)$/i.test(handle.name)) {
+          await loadHandle(handle as FileSystemFileHandle)
+          return
+        }
+      } catch (error) {
+        console.warn('Unable to get a persistent file handle from drag-and-drop:', error)
+      }
+    }
+
+    const file = dataTransfer.files[0]
+    if (file && /\.(md|markdown)$/i.test(file.name)) await loadFile(file)
   }
 
   useEffect(() => {
@@ -135,7 +156,6 @@ export default function App() {
           size: file.size,
         }
         setSource((current) => current === text ? current : text)
-        setFileName(file.name)
         document.title = `${file.name} · Markdown Viewer`
       } catch (error) {
         console.warn('Unable to check Markdown file for changes:', error)
@@ -178,7 +198,7 @@ export default function App() {
     let frame = 0
     const updateActiveHeading = () => {
       frame = 0
-      const activationLine = 84
+      const activationLine = 32
       let nextActive = headings[0].id
 
       for (const heading of headings) {
@@ -259,63 +279,26 @@ export default function App() {
     return () => root.removeEventListener('click', onClick)
   }, [html])
 
-  const openFile = async () => {
-    const picker = (window as Window & {
-      showOpenFilePicker?: (options?: unknown) => Promise<FileSystemFileHandle[]>
-    }).showOpenFilePicker
-
-    if (picker) {
-      const [handle] = await picker({
-        multiple: false,
-        types: [{
-          description: 'Markdown files',
-          accept: { 'text/markdown': ['.md', '.markdown'] },
-        }],
-      })
-      if (handle) await loadHandle(handle)
-      return
-    }
-
-    document.getElementById('file-input')?.click()
-  }
-
   return (
     <div
       className="app-shell"
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
         event.preventDefault()
-        const file = event.dataTransfer.files[0]
-        if (file && /\.(md|markdown)$/i.test(file.name)) void loadFile(file)
+        void handleDrop(event.dataTransfer)
       }}
     >
-      <header className="topbar">
-        <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Open outline">
-          <Menu size={20} />
-        </button>
-        <div className="file-title">
-          <FileText size={18} />
-          <span className="file-name">{fileName}</span>
-          {watching && <span className="watch-status" title="Watching for external file changes"><span className="watch-dot" />Live</span>}
-        </div>
-        <button className="open-button" onClick={() => void openFile()}><FolderOpen size={17} /> Open</button>
-        <input
-          id="file-input"
-          hidden
-          type="file"
-          accept=".md,.markdown,text/markdown,text/plain"
-          onChange={(event) => {
-            const file = event.target.files?.[0]
-            if (file) void loadFile(file)
-            event.currentTarget.value = ''
-          }}
-        />
-      </header>
+      <button className="outline-toggle mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Open outline">
+        <Menu size={20} />
+      </button>
 
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
           <strong>Outline</strong>
-          <button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close outline"><X size={19} /></button>
+          <div className="sidebar-actions">
+            {watching && <span className="watch-status" title="Watching for external file changes"><span className="watch-dot" />Live</span>}
+            <button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close outline"><X size={19} /></button>
+          </div>
         </div>
         <nav>
           {outline.length ? outline.map((item) => {
