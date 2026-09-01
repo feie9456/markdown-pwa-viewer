@@ -4,7 +4,7 @@ import { registerSW } from 'virtual:pwa-register'
 import App from './App'
 import './styles.css'
 import 'katex/dist/katex.min.css'
-import 'highlight.js/styles/github.css'
+import './highlight-theme.css'
 
 registerSW({ immediate: true })
 

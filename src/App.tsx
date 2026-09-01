@@ -76,6 +76,45 @@ console.log(hello)
 \`\`\`
 `
 
+let mermaidSeq = 0
+
+const buildMermaidError = (error: unknown, diagram: string) => {
+  const wrapper = document.createElement('div')
+  wrapper.className = 'mermaid-error'
+
+  const heading = document.createElement('strong')
+  heading.textContent = 'Mermaid diagram failed to render'
+
+  const message = document.createElement('p')
+  message.textContent = error instanceof Error ? error.message : String(error)
+
+  const details = document.createElement('details')
+  const summary = document.createElement('summary')
+  summary.textContent = 'Show source'
+  const pre = document.createElement('pre')
+  pre.textContent = diagram
+  details.append(summary, pre)
+
+  wrapper.append(heading, message, details)
+  return wrapper
+}
+
+const darkSchemeQuery = () => window.matchMedia('(prefers-color-scheme: dark)')
+
+function usePrefersDark() {
+  const [prefersDark, setPrefersDark] = useState(() => darkSchemeQuery().matches)
+
+  useEffect(() => {
+    const query = darkSchemeQuery()
+    const onChange = (event: MediaQueryListEvent) => setPrefersDark(event.matches)
+    query.addEventListener('change', onChange)
+    setPrefersDark(query.matches)
+    return () => query.removeEventListener('change', onChange)
+  }, [])
+
+  return prefersDark
+}
+
 const toStoredDocument = (tab: ViewerTab): StoredDocument => {
   const { watching: _watching, ...document } = tab
   return document
@@ -123,6 +162,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [recentOpen, setRecentOpen] = useState(false)
   const [hydrated, setHydrated] = useState(false)
+  const prefersDark = usePrefersDark()
 
   const contentRef = useRef<HTMLElement>(null)
   const sidebarRef = useRef<HTMLElement>(null)
@@ -140,6 +180,9 @@ export default function App() {
   )
   const source = activeTab?.source ?? welcome
   const html = useMemo(() => renderMarkdown(source), [source])
+  // React 19 diffs props by reference, so an inline `{ __html }` object would make it
+  // reassign innerHTML on every render and destroy anything rendered into the article.
+  const markdownHtml = useMemo(() => ({ __html: html }), [html])
   const tabIdsKey = tabs.map((tab) => tab.id).join('|')
 
   useEffect(() => {
@@ -569,31 +612,66 @@ export default function App() {
 
   useEffect(() => {
     const root = contentRef.current
-    if (!root) return
-
-    const diagrams = Array.from(root.querySelectorAll<HTMLElement>('.mermaid'))
-    if (!diagrams.length) return
+    if (!root || !root.querySelector('.mermaid')) return
 
     let cancelled = false
-    void import('mermaid')
-      .then(({ default: mermaid }) => {
+
+    void (async () => {
+      let mermaid: typeof import('mermaid').default
+      try {
+        mermaid = (await import('mermaid')).default
+      } catch (error) {
+        console.error('Unable to load Mermaid:', error)
         if (cancelled) return
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: 'strict',
-          theme: 'default',
-          fontFamily: 'inherit',
-        })
-        return mermaid.run({ nodes: diagrams })
+        for (const node of Array.from(root.querySelectorAll<HTMLElement>('.mermaid'))) {
+          node.classList.add('mermaid-failed')
+          node.replaceChildren(buildMermaidError(error, node.dataset.mermaidSource ?? ''))
+        }
+        return
+      }
+      if (cancelled) return
+
+      const theme = prefersDark ? 'dark' : 'default'
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme,
+        fontFamily: 'inherit',
       })
-      .catch((error) => {
-        console.error('Mermaid render failed:', error)
-      })
+
+      // Re-query here: the article's innerHTML may have been rewritten while we awaited.
+      for (const node of Array.from(root.querySelectorAll<HTMLElement>('.mermaid'))) {
+        if (cancelled) return
+        if (!node.isConnected || node.dataset.mermaidTheme === theme) continue
+
+        const diagram = node.dataset.mermaidSource ?? ''
+        if (!diagram.trim()) continue
+
+        mermaidSeq += 1
+        const id = `mermaid-svg-${mermaidSeq}`
+        try {
+          const { svg, bindFunctions } = await mermaid.render(id, diagram)
+          if (cancelled || !node.isConnected) return
+          node.innerHTML = svg
+          bindFunctions?.(node)
+          node.classList.remove('mermaid-failed')
+          node.dataset.mermaidTheme = theme
+        } catch (error) {
+          if (cancelled || !node.isConnected) return
+          // Mermaid can leave its scratch elements behind when parsing throws.
+          document.getElementById(id)?.remove()
+          document.getElementById(`d${id}`)?.remove()
+          node.classList.add('mermaid-failed')
+          node.dataset.mermaidTheme = theme
+          node.replaceChildren(buildMermaidError(error, diagram))
+        }
+      }
+    })()
 
     return () => {
       cancelled = true
     }
-  }, [html])
+  }, [html, prefersDark])
 
   useEffect(() => {
     const root = contentRef.current
@@ -720,7 +798,7 @@ export default function App() {
       {sidebarOpen && <button className="backdrop mobile-only" aria-label="Close outline" onClick={() => setSidebarOpen(false)} />}
 
       <main className="viewer">
-        <article ref={contentRef} className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />
+        <article ref={contentRef} className="markdown-body" dangerouslySetInnerHTML={markdownHtml} />
       </main>
     </div>
   )

@@ -238,7 +238,74 @@ button { color: inherit; }
 .code-block code.hljs { padding: 0; background: transparent; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .mermaid { display: flex; justify-content: center; overflow-x: auto; margin: 20px 0; }
+.mermaid:empty { display: none; }
+.mermaid.mermaid-failed { display: block; }
+.mermaid-error {
+  padding: 12px 14px;
+  border: 1px solid #ffb1a8;
+  border-radius: 8px;
+  background: #fff5f4;
+  color: #82071e;
+  font-size: 13px;
+}
+.mermaid-error strong { display: block; margin-bottom: 4px; }
+.mermaid-error p { margin: 0 0 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.mermaid-error summary { cursor: pointer; color: #57606a; }
+.mermaid-error pre { margin: 8px 0 0; overflow: auto; color: #1f2328; font-size: 12px; }
+
 .katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+
+.markdown-body .front-matter {
+  margin: 0 0 24px;
+  border: 1px solid #d8dee4;
+  border-radius: 10px;
+  background: #f6f8fa;
+}
+.front-matter > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.front-matter > summary::-webkit-details-marker { display: none; }
+.front-matter > summary::before { content: "\25B8"; color: #8c959f; transition: transform .12s ease; }
+.front-matter[open] > summary::before { transform: rotate(90deg); }
+.fm-label { color: #57606a; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.fm-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.fm-note { color: #cf222e; font-size: 12px; }
+.fm-body { padding: 0 14px 14px; }
+
+.markdown-body .fm-grid {
+  display: table;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+.markdown-body .fm-grid th, .markdown-body .fm-grid td {
+  padding: 6px 10px;
+  border: 1px solid #d8dee4;
+  background: transparent;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-body .fm-grid td { overflow-wrap: break-word; }
+.markdown-body .fm-grid th { white-space: nowrap; }
+.markdown-body .fm-grid thead th { background: #eaeef2; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #57606a; }
+.markdown-body .fm-root > tbody > tr > th { width: 1%; color: #57606a; font-weight: 600; }
+.markdown-body .fm-list { margin: 0; padding-left: 18px; }
+.markdown-body .fm-list > li { margin: 2px 0; }
+.markdown-body .fm-multiline { margin: 0; padding: 8px 10px; overflow: auto; border-radius: 6px; background: #eaeef2; font-size: 12.5px; }
+.fm-token { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.fm-bool { color: #0550ae; }
+.fm-number { color: #0a3069; }
+.fm-empty { color: #8c959f; font-style: italic; }
+.markdown-body .fm-raw { margin: 0; padding: 12px 14px; overflow: auto; border-radius: 8px; background: #eaeef2; }
+.fm-raw code { font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: transparent; }
 
 .icon-button, .outline-toggle {
   display: inline-flex;
@@ -302,4 +369,16 @@ button { color: inherit; }
   .markdown-body :not(pre) > code { background: rgba(110,118,129,.4); }
   .copy-code { color: #8b949e; }
   .copy-code:hover { color: #e6edf3; background: #30363d; }
+  .mermaid-error { border-color: #6e2c28; background: #2d1618; color: #ffa198; }
+  .mermaid-error summary { color: #8b949e; }
+  .mermaid-error pre { color: #e6edf3; }
+  .markdown-body .front-matter { border-color: #30363d; background: #161b22; }
+  .fm-label, .markdown-body .fm-root > tbody > tr > th { color: #8b949e; }
+  .fm-note { color: #ff7b72; }
+  .markdown-body .fm-grid th, .markdown-body .fm-grid td { border-color: #30363d; }
+  .markdown-body .fm-grid thead th { background: #21262d; color: #8b949e; }
+  .markdown-body .fm-multiline, .markdown-body .fm-raw { background: #0d1117; }
+  .fm-bool { color: #79c0ff; }
+  .fm-number { color: #a5d6ff; }
+  .fm-empty { color: #6e7681; }
 }
