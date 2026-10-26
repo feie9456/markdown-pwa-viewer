@@ -1,12 +1,13 @@
 import MarkdownIt from 'markdown-it'
-import type { StateBlock } from 'markdown-it'
+import type { StateBlock, StateInline } from 'markdown-it'
 import anchor from 'markdown-it-anchor'
 import texmath from 'markdown-it-texmath'
 import katex from 'katex'
 import hljs from 'highlight.js'
+import DOMPurify from 'dompurify'
 import { load as loadYaml } from 'js-yaml'
 
-const escapeHtml = (value: string) =>
+const escapeHtml = (value: string): string =>
   value
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -14,11 +15,29 @@ const escapeHtml = (value: string) =>
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;')
 
-const highlight = (code: string, language: string) => {
+const highlight = (code: string, language: string): string => {
   if (language && hljs.getLanguage(language)) {
     return hljs.highlight(code, { language, ignoreIllegals: true }).value
   }
   return hljs.highlightAuto(code).value
+}
+
+export const decodeLocalPath = (rawUrl: string): string => {
+  const withoutFileScheme = rawUrl.trim().replace(/^file:\/\/\/?/i, (match) =>
+    /^file:\/\/\/[a-zA-Z]:/i.test(rawUrl.trim()) ? '' : match === 'file:///' ? '/' : '',
+  )
+  try {
+    return decodeURIComponent(withoutFileScheme)
+  } catch {
+    return withoutFileScheme
+  }
+}
+
+export const isLocalResourceUrl = (url: string): boolean => {
+  const trimmed = url.trim()
+  if (!trimmed || trimmed.startsWith('#')) return false
+  if (/^(https?:|data:|blob:|mailto:|tel:|javascript:|vbscript:|\/\/)/i.test(trimmed)) return false
+  return true
 }
 
 /* ---------------------------------------------------------------- front matter */
@@ -33,7 +52,7 @@ const isScalar = (value: YamlValue): value is string | number | boolean | null =
 const isPlainObject = (value: YamlValue): value is Record<string, YamlValue> =>
   typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)
 
-const renderScalar = (value: string | number | boolean | null) => {
+const renderScalar = (value: string | number | boolean | null): string => {
   if (value === null) return '<span class="fm-empty">null</span>'
   if (typeof value === 'boolean') return `<span class="fm-token fm-bool">${value}</span>`
   if (typeof value === 'number') return `<span class="fm-token fm-number">${value}</span>`
@@ -44,7 +63,7 @@ const renderScalar = (value: string | number | boolean | null) => {
 }
 
 // A list of uniform records reads far better as one table than as N nested tables.
-const sharedScalarKeys = (items: YamlValue[]) => {
+const sharedScalarKeys = (items: YamlValue[]): string[] | null => {
   if (items.length < 2 || !items.every(isPlainObject)) return null
 
   const keys = Object.keys(items[0] as Record<string, YamlValue>)
@@ -93,12 +112,12 @@ const renderValue = (value: YamlValue, depth: number): string => {
   return `<code>${escapeHtml(String(value))}</code>`
 }
 
-const renderRawFrontMatter = (raw: string, reason?: string) => `<details class="front-matter" open>
+const renderRawFrontMatter = (raw: string, reason?: string): string => `<details class="front-matter" open>
   <summary><span class="fm-label">Front matter</span>${reason ? `<span class="fm-note">${escapeHtml(reason)}</span>` : ''}</summary>
   <div class="fm-body"><pre class="fm-raw"><code class="hljs language-yaml">${highlight(raw, 'yaml')}</code></pre></div>
 </details>`
 
-const renderFrontMatter = (raw: string) => {
+const renderFrontMatter = (raw: string): string => {
   if (!raw.trim()) return ''
 
   let data: YamlValue
@@ -129,7 +148,7 @@ const renderFrontMatter = (raw: string) => {
 </details>`
 }
 
-const frontMatterRule = (state: StateBlock, startLine: number, endLine: number, silent: boolean) => {
+const frontMatterRule = (state: StateBlock, startLine: number, endLine: number, silent: boolean): boolean => {
   // Front matter is only front matter at the very top of the document.
   if (startLine !== 0 || state.blkIndent !== 0 || state.tShift[startLine] !== 0) return false
 
@@ -166,16 +185,146 @@ const frontMatterRule = (state: StateBlock, startLine: number, endLine: number, 
   return true
 }
 
+const renderImageHtml = (
+  rawSrc: string,
+  alt: string,
+  title?: string | null,
+  width?: string | null,
+  height?: string | null,
+): string => {
+  const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
+  const widthAttr = width ? ` width="${escapeHtml(width)}"` : ''
+  const heightAttr = height ? ` height="${escapeHtml(height)}"` : ''
+
+  if (isLocalResourceUrl(rawSrc)) {
+    const decoded = decodeLocalPath(rawSrc)
+    return `<img class="local-image local-image-pending" data-local-src="${escapeHtml(decoded)}" data-raw-src="${escapeHtml(rawSrc)}" alt="${escapeHtml(alt)}"${titleAttr}${widthAttr}${heightAttr} loading="lazy">`
+  }
+
+  return `<img src="${escapeHtml(rawSrc)}" alt="${escapeHtml(alt)}"${titleAttr}${widthAttr}${heightAttr} loading="lazy">`
+}
+
+const SAFE_HTML_TAG_RE = /^<\/?(br|img|sub|sup|kbd|mark|u|s|del|ins|small|details|summary|figure|figcaption)(\s|>|\/)/i
+
+const renderSafeHtml = (rawHtml: string): string => {
+  const trimmed = rawHtml.trim()
+  if (/^<br\s*\/?>$/i.test(trimmed)) return '<br>'
+  if (!SAFE_HTML_TAG_RE.test(trimmed)) return escapeHtml(rawHtml)
+
+  const sanitized = DOMPurify.sanitize(rawHtml, {
+    ALLOWED_TAGS: [
+      'br',
+      'img',
+      'sub',
+      'sup',
+      'kbd',
+      'mark',
+      'u',
+      's',
+      'del',
+      'ins',
+      'small',
+      'details',
+      'summary',
+      'figure',
+      'figcaption',
+    ],
+    ALLOWED_ATTR: ['src', 'alt', 'title', 'width', 'height', 'open'],
+  })
+
+  if (!sanitized.includes('<img')) return sanitized
+
+  const template = document.createElement('template')
+  template.innerHTML = sanitized
+  for (const img of Array.from(template.content.querySelectorAll('img'))) {
+    const src = img.getAttribute('src') ?? ''
+    if (isLocalResourceUrl(src)) {
+      img.removeAttribute('src')
+      img.setAttribute('data-local-src', decodeLocalPath(src))
+      img.setAttribute('data-raw-src', src)
+      img.classList.add('local-image', 'local-image-pending')
+      img.setAttribute('loading', 'lazy')
+    }
+  }
+  return template.innerHTML
+}
+
+// CommonMark disallows unencoded spaces in `![alt](path with space.png)`.
+// Support unencoded spaces when the destination clearly ends with an image extension.
+const imageWithSpacesRule = (state: StateInline, silent: boolean): boolean => {
+  const start = state.pos
+  if (state.src.charCodeAt(start) !== 0x21 /* ! */ || state.src.charCodeAt(start + 1) !== 0x5B /* [ */) {
+    return false
+  }
+
+  const labelStart = start + 2
+  const labelEnd = state.md.helpers.parseLinkLabel(state, start + 1, false)
+  if (labelEnd < 0) return false
+
+  const openParenPos = labelEnd + 1
+  if (openParenPos >= state.posMax || state.src.charCodeAt(openParenPos) !== 0x28 /* ( */) {
+    return false
+  }
+
+  const rest = state.src.slice(openParenPos + 1, state.posMax)
+  const match = /^([^\n\r()]+?\.(?:png|jpe?g|gif|webp|svg|bmp|avif|ico))\)/i.exec(rest)
+  if (!match) return false
+
+  const rawDest = match[1].trim()
+  if (!rawDest.includes(' ') || rawDest.startsWith('<')) return false
+
+  if (!silent) {
+    const altText = state.src.slice(labelStart, labelEnd).replace(/\\([![\]\\])/g, '$1')
+    const token = state.push('image', 'img', 0)
+    token.attrs = [
+      ['src', rawDest],
+      ['alt', ''],
+    ]
+    const textToken = new state.Token('text', '', 0)
+    textToken.content = altText
+    token.children = [textToken]
+  }
+
+  state.pos = openParenPos + 1 + match[0].length
+  return true
+}
+
 /* ---------------------------------------------------------------- markdown-it */
 
 export const md = new MarkdownIt({
-  html: false,
+  html: true,
   linkify: true,
   typographer: true,
 })
 
+const defaultValidateLink = md.validateLink.bind(md)
+const SAFE_DATA_IMAGE_RE = /^data:image\/(gif|png|jpe?g|webp|avif|bmp|svg\+xml|x-icon|vnd\.microsoft\.icon);/i
+
+md.validateLink = (url: string): boolean => {
+  const str = url.trim()
+  if (SAFE_DATA_IMAGE_RE.test(str)) {
+    return !/<script/i.test(str)
+  }
+  if (/^file:\/\//i.test(str)) {
+    return true
+  }
+  return defaultValidateLink(url)
+}
+
 md.block.ruler.before('table', 'front_matter', frontMatterRule, { alt: [] })
-md.renderer.rules.front_matter = (tokens, idx) => renderFrontMatter(tokens[idx].content)
+md.renderer.rules.front_matter = (tokens, idx): string => renderFrontMatter(tokens[idx].content)
+md.inline.ruler.before('image', 'image_with_spaces', imageWithSpacesRule)
+
+md.renderer.rules.html_inline = (tokens, idx): string => renderSafeHtml(tokens[idx].content)
+md.renderer.rules.html_block = (tokens, idx): string => renderSafeHtml(tokens[idx].content)
+
+md.renderer.rules.image = (tokens, idx, options, env, self): string => {
+  const token = tokens[idx]
+  const rawSrc = token.attrGet('src') ?? ''
+  const title = token.attrGet('title')
+  const alt = token.children ? self.renderInlineAsText(token.children, options, env) : (token.attrGet('alt') ?? '')
+  return renderImageHtml(rawSrc, alt, title)
+}
 
 md.use(anchor, {
   permalink: anchor.permalink.linkInsideHeader({
@@ -195,7 +344,7 @@ md.use(texmath, {
   },
 })
 
-md.renderer.rules.fence = (tokens, idx) => {
+md.renderer.rules.fence = (tokens, idx): string => {
   const token = tokens[idx]
   const info = token.info.trim()
 
@@ -226,4 +375,4 @@ md.renderer.rules.fence = (tokens, idx) => {
   </div>`
 }
 
-export const renderMarkdown = (source: string) => md.render(source)
+export const renderMarkdown = (source: string): string => md.render(source)

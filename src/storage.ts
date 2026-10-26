@@ -6,6 +6,7 @@ export type StoredDocument = {
   lastModified: number
   lastOpenedAt: number
   handle?: FileSystemFileHandle
+  directoryHandle?: FileSystemDirectoryHandle
 }
 
 export type StoredSession = {
@@ -15,6 +16,11 @@ export type StoredSession = {
   scrollById: Record<string, number>
 }
 
+export type StoredDirectories = {
+  key: 'directories'
+  handles: FileSystemDirectoryHandle[]
+}
+
 const DB_NAME = 'markdown-pwa-viewer'
 const DB_VERSION = 1
 const DOCUMENTS_STORE = 'documents'
@@ -22,14 +28,14 @@ const SESSION_STORE = 'session'
 
 let dbPromise: Promise<IDBDatabase> | null = null
 
-function requestToPromise<T>(request: IDBRequest<T>) {
+function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'))
   })
 }
 
-function transactionDone(transaction: IDBTransaction) {
+function transactionDone(transaction: IDBTransaction): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     transaction.oncomplete = () => resolve()
     transaction.onerror = () => reject(transaction.error ?? new Error('IndexedDB transaction failed'))
@@ -37,7 +43,7 @@ function transactionDone(transaction: IDBTransaction) {
   })
 }
 
-function openDatabase() {
+function openDatabase(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise
 
   dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
@@ -60,7 +66,7 @@ function openDatabase() {
   return dbPromise
 }
 
-async function putDocumentOnce(document: StoredDocument) {
+async function putDocumentOnce(document: StoredDocument): Promise<void> {
   const db = await openDatabase()
   const transaction = db.transaction(DOCUMENTS_STORE, 'readwrite')
   const done = transactionDone(transaction)
@@ -68,20 +74,20 @@ async function putDocumentOnce(document: StoredDocument) {
   await done
 }
 
-export async function putDocument(document: StoredDocument) {
+export async function putDocument(document: StoredDocument): Promise<void> {
   try {
     await putDocumentOnce(document)
   } catch (error) {
-    if (!document.handle) throw error
+    if (!document.handle && !document.directoryHandle) throw error
 
-    // FileSystemFileHandle is structured-cloneable in Chromium, but not all browsers
+    // FileSystemHandle is structured-cloneable in Chromium, but not all browsers
     // support persisting it in IndexedDB. Keep the content snapshot as a fallback.
-    const { handle: _handle, ...snapshotOnly } = document
+    const { handle: _handle, directoryHandle: _directoryHandle, ...snapshotOnly } = document
     await putDocumentOnce(snapshotOnly)
   }
 }
 
-export async function getDocuments(ids: string[]) {
+export async function getDocuments(ids: string[]): Promise<StoredDocument[]> {
   if (!ids.length) return [] as StoredDocument[]
 
   const db = await openDatabase()
@@ -94,7 +100,7 @@ export async function getDocuments(ids: string[]) {
   return documents.filter((document): document is StoredDocument => Boolean(document))
 }
 
-export async function getRecentDocuments(limit = 20) {
+export async function getRecentDocuments(limit = 20): Promise<StoredDocument[]> {
   const db = await openDatabase()
   const transaction = db.transaction(DOCUMENTS_STORE, 'readonly')
   const done = transactionDone(transaction)
@@ -106,7 +112,7 @@ export async function getRecentDocuments(limit = 20) {
     .slice(0, limit)
 }
 
-export async function getSession() {
+export async function getSession(): Promise<StoredSession | null> {
   const db = await openDatabase()
   const transaction = db.transaction(SESSION_STORE, 'readonly')
   const done = transactionDone(transaction)
@@ -115,10 +121,39 @@ export async function getSession() {
   return session ?? null
 }
 
-export async function putSession(session: StoredSession) {
+export async function putSession(session: StoredSession): Promise<void> {
   const db = await openDatabase()
   const transaction = db.transaction(SESSION_STORE, 'readwrite')
   const done = transactionDone(transaction)
   transaction.objectStore(SESSION_STORE).put(session)
   await done
+}
+
+export async function getDirectoryHandles(): Promise<FileSystemDirectoryHandle[]> {
+  try {
+    const db = await openDatabase()
+    const transaction = db.transaction(SESSION_STORE, 'readonly')
+    const done = transactionDone(transaction)
+    const record = await requestToPromise(transaction.objectStore(SESSION_STORE).get('directories')) as StoredDirectories | undefined
+    await done
+    return Array.isArray(record?.handles) ? record.handles : []
+  } catch {
+    return []
+  }
+}
+
+export async function putDirectoryHandles(handles: FileSystemDirectoryHandle[]): Promise<void> {
+  try {
+    const db = await openDatabase()
+    const transaction = db.transaction(SESSION_STORE, 'readwrite')
+    const done = transactionDone(transaction)
+    const record: StoredDirectories = {
+      key: 'directories',
+      handles,
+    }
+    transaction.objectStore(SESSION_STORE).put(record)
+    await done
+  } catch {
+    // Ignore if browser does not support persisting FileSystemDirectoryHandle in IndexedDB.
+  }
 }
