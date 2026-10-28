@@ -165,6 +165,7 @@ button { color: inherit; }
 }
 .tabs-strip::-webkit-scrollbar { display: none; }
 .tab-item {
+  position: relative;
   min-width: 110px;
   max-width: 220px;
   height: 100%;
@@ -186,6 +187,20 @@ button { color: inherit; }
   color: #1f2328;
   box-shadow: inset 0 -2px #0969da;
 }
+.tab-item.dragging { opacity: .45; }
+.tab-item.drop-before::before,
+.tab-item.drop-after::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 2px;
+  background: #0969da;
+  pointer-events: none;
+}
+.tab-item.drop-before::before { left: 0; }
+.tab-item.drop-after::after { right: -1px; }
 .tab-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab-close {
   flex: 0 0 auto;
@@ -202,6 +217,46 @@ button { color: inherit; }
   cursor: pointer;
 }
 .tab-close:hover { color: #1f2328; background: #d8dee4; }
+
+.tab-context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 156px;
+  padding: 5px;
+  border: 1px solid #d0d7de;
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 10px 30px rgba(31, 35, 40, .16);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.tab-context-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #1f2328;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.tab-context-item:hover:not(:disabled) {
+  background: #f6f8fa;
+  color: #0969da;
+}
+.tab-context-item:disabled {
+  color: #8c959f;
+  opacity: .55;
+  cursor: default;
+}
+.tab-context-divider {
+  height: 1px;
+  margin: 4px 4px;
+  background: #d8dee4;
+}
 
 .viewer { margin-left: 260px; padding: 72px 40px 64px; }
 .local-assets-banner {
@@ -436,8 +491,15 @@ button { color: inherit; }
   .tab-item { color: #8b949e; background: #161b22; }
   .tab-item:hover { background: #21262d; }
   .tab-item.active { color: #e6edf3; background: #0d1117; box-shadow: inset 0 -2px #58a6ff; }
+  .tab-item.drop-before::before,
+  .tab-item.drop-after::after { background: #58a6ff; }
   .tab-close { color: #8b949e; }
   .tab-close:hover { color: #e6edf3; background: #30363d; }
+  .tab-context-menu { border-color: #30363d; background: #161b22; box-shadow: 0 12px 36px rgba(0, 0, 0, .4); }
+  .tab-context-item { color: #e6edf3; }
+  .tab-context-item:hover:not(:disabled) { background: #21262d; color: #58a6ff; }
+  .tab-context-item:disabled { color: #6e7681; }
+  .tab-context-divider { background: #30363d; }
   .icon-button, .outline-toggle { color: #e6edf3; border-color: #30363d; background: rgba(33,38,45,.92); }
   .icon-button:hover, .outline-toggle:hover { background: #30363d; }
   .local-assets-banner { border-color: #1f6feb; background: rgba(56, 139, 253, .14); color: #79c0ff; }

@@ -1,4 +1,14 @@
-import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type ChangeEvent,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { FolderOpen, History, Menu, X } from 'lucide-react'
 import { decodeLocalPath, isLocalResourceUrl, renderMarkdown } from './markdown'
 import {
@@ -20,6 +30,17 @@ type OutlineItem = {
 
 type ViewerTab = StoredDocument & {
   watching: boolean
+}
+
+type TabContextMenuState = {
+  tabId: string
+  x: number
+  y: number
+}
+
+type TabDropTargetState = {
+  tabId: string
+  position: 'before' | 'after'
 }
 
 type LaunchParamsLike = {
@@ -542,6 +563,9 @@ export default function App(): React.JSX.Element {
   const [activeHeading, setActiveHeading] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [recentOpen, setRecentOpen] = useState(false)
+  const [tabContextMenu, setTabContextMenu] = useState<TabContextMenuState | null>(null)
+  const [draggingTabId, setDraggingTabId] = useState<string | null>(null)
+  const [tabDropTarget, setTabDropTarget] = useState<TabDropTargetState | null>(null)
   const [hydrated, setHydrated] = useState(false)
   const prefersDark = usePrefersDark()
 
@@ -550,9 +574,11 @@ export default function App(): React.JSX.Element {
   const tabBarRef = useRef<HTMLDivElement>(null)
   const activeOutlineRef = useRef<HTMLAnchorElement>(null)
   const recentMenuRef = useRef<HTMLDivElement>(null)
+  const tabContextMenuRef = useRef<HTMLDivElement>(null)
   const dirInputRef = useRef<HTMLInputElement>(null)
   const tabsRef = useRef<ViewerTab[]>([])
   const activeTabIdRef = useRef<string | null>(null)
+  const draggingTabIdRef = useRef<string | null>(null)
   const directoryHandlesRef = useRef<FileSystemDirectoryHandle[]>([])
   const memoryFilesRef = useRef<Map<string, File>>(new Map())
   const scrollByIdRef = useRef<Record<string, number>>({})
@@ -690,13 +716,10 @@ export default function App(): React.JSX.Element {
     document.title = activeTab ? `${activeTab.name} · Markdown Viewer` : 'Markdown PWA Viewer'
   }, [activeTab?.id, activeTab?.name])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!activeTabId) return
     const targetY = scrollByIdRef.current[activeTabId] ?? 0
-    const frame = window.requestAnimationFrame(() => {
-      window.scrollTo({ top: targetY, left: 0, behavior: 'auto' })
-    })
-    return () => window.cancelAnimationFrame(frame)
+    window.scrollTo({ top: targetY, left: 0, behavior: 'instant' })
   }, [activeTabId])
 
   const selectTab = (id: string): void => {
@@ -722,6 +745,168 @@ export default function App(): React.JSX.Element {
       const replacement = remaining[Math.min(index, remaining.length - 1)]?.id ?? null
       setActiveTabId(replacement)
     }
+  }
+
+  const applyRemainingTabs = (remaining: ViewerTab[], preferredId: string): void => {
+    const currentTabs = tabsRef.current
+    const remainingIds = new Set(remaining.map((tab) => tab.id))
+
+    if (activeTabIdRef.current) {
+      scrollByIdRef.current[activeTabIdRef.current] = window.scrollY
+    }
+
+    for (const tab of currentTabs) {
+      if (!remainingIds.has(tab.id)) {
+        delete scrollByIdRef.current[tab.id]
+      }
+    }
+
+    setTabs(remaining)
+
+    const currentActive = activeTabIdRef.current
+    if (currentActive && remainingIds.has(currentActive)) return
+
+    if (remainingIds.has(preferredId)) {
+      setActiveTabId(preferredId)
+    } else {
+      setActiveTabId(remaining[remaining.length - 1]?.id ?? null)
+    }
+  }
+
+  const closeOtherTabs = (id: string): void => {
+    const remaining = tabsRef.current.filter((tab) => tab.id === id)
+    applyRemainingTabs(remaining, id)
+  }
+
+  const closeTabsToLeft = (id: string): void => {
+    const currentTabs = tabsRef.current
+    const index = currentTabs.findIndex((tab) => tab.id === id)
+    if (index <= 0) return
+    applyRemainingTabs(currentTabs.slice(index), id)
+  }
+
+  const closeTabsToRight = (id: string): void => {
+    const currentTabs = tabsRef.current
+    const index = currentTabs.findIndex((tab) => tab.id === id)
+    if (index < 0 || index >= currentTabs.length - 1) return
+    applyRemainingTabs(currentTabs.slice(0, index + 1), id)
+  }
+
+  const closeAllTabs = (): void => {
+    scrollByIdRef.current = {}
+    setTabs([])
+    setActiveTabId(null)
+  }
+
+  const moveTab = (sourceId: string, targetId: string, position: 'before' | 'after'): void => {
+    if (sourceId === targetId) return
+    setTabs((current) => {
+      const fromIndex = current.findIndex((tab) => tab.id === sourceId)
+      const targetIndex = current.findIndex((tab) => tab.id === targetId)
+      if (fromIndex < 0 || targetIndex < 0) return current
+
+      const next = [...current]
+      const [moved] = next.splice(fromIndex, 1)
+      const adjustedTargetIndex = next.findIndex((tab) => tab.id === targetId)
+      if (adjustedTargetIndex < 0) return current
+
+      const insertIndex = position === 'before' ? adjustedTargetIndex : adjustedTargetIndex + 1
+      next.splice(insertIndex, 0, moved)
+      return next
+    })
+  }
+
+  const openTabContextMenu = (event: ReactMouseEvent<HTMLDivElement>, tabId: string): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    setRecentOpen(false)
+    const menuWidth = 180
+    const menuHeight = 196
+    const x = Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8))
+    const y = Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8))
+    setTabContextMenu({ tabId, x, y })
+  }
+
+  const handleTabDragStart = (event: ReactDragEvent<HTMLDivElement>, tabId: string): void => {
+    setTabContextMenu(null)
+    draggingTabIdRef.current = tabId
+    setDraggingTabId(tabId)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', tabId)
+  }
+
+  const handleTabDragOver = (event: ReactDragEvent<HTMLDivElement>, targetTabId: string): void => {
+    const sourceId = draggingTabIdRef.current
+    if (!sourceId) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = 'move'
+
+    if (sourceId === targetTabId) {
+      if (tabDropTarget !== null) setTabDropTarget(null)
+      return
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect()
+    const position: 'before' | 'after' = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'
+    if (tabDropTarget?.tabId !== targetTabId || tabDropTarget.position !== position) {
+      setTabDropTarget({ tabId: targetTabId, position })
+    }
+  }
+
+  const handleTabDrop = (event: ReactDragEvent<HTMLDivElement>, targetTabId: string): void => {
+    const sourceId = draggingTabIdRef.current
+    if (!sourceId) return
+    event.preventDefault()
+    event.stopPropagation()
+
+    const rect = event.currentTarget.getBoundingClientRect()
+    const position: 'before' | 'after' = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'
+    moveTab(sourceId, targetTabId, position)
+
+    draggingTabIdRef.current = null
+    setDraggingTabId(null)
+    setTabDropTarget(null)
+  }
+
+  const handleTabStripDragOver = (event: ReactDragEvent<HTMLDivElement>): void => {
+    const sourceId = draggingTabIdRef.current
+    if (!sourceId) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = 'move'
+
+    const lastTab = tabsRef.current[tabsRef.current.length - 1]
+    if (!lastTab || lastTab.id === sourceId) {
+      if (tabDropTarget !== null) setTabDropTarget(null)
+      return
+    }
+
+    if (tabDropTarget?.tabId !== lastTab.id || tabDropTarget.position !== 'after') {
+      setTabDropTarget({ tabId: lastTab.id, position: 'after' })
+    }
+  }
+
+  const handleTabStripDrop = (event: ReactDragEvent<HTMLDivElement>): void => {
+    const sourceId = draggingTabIdRef.current
+    if (!sourceId) return
+    event.preventDefault()
+    event.stopPropagation()
+
+    const lastTab = tabsRef.current[tabsRef.current.length - 1]
+    if (lastTab && lastTab.id !== sourceId) {
+      moveTab(sourceId, lastTab.id, 'after')
+    }
+
+    draggingTabIdRef.current = null
+    setDraggingTabId(null)
+    setTabDropTarget(null)
+  }
+
+  const handleTabDragEnd = (): void => {
+    draggingTabIdRef.current = null
+    setDraggingTabId(null)
+    setTabDropTarget(null)
   }
 
   const findMatchingStoredDocument = async (
@@ -1074,6 +1259,36 @@ export default function App(): React.JSX.Element {
   }, [recentOpen])
 
   useEffect(() => {
+    if (!tabContextMenu) return
+
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target as Node
+      if (!tabContextMenuRef.current?.contains(target)) {
+        setTabContextMenu(null)
+      }
+    }
+
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setTabContextMenu(null)
+      }
+    }
+
+    const onDismiss = (): void => setTabContextMenu(null)
+
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    window.addEventListener('scroll', onDismiss, { passive: true })
+    window.addEventListener('resize', onDismiss)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('scroll', onDismiss)
+      window.removeEventListener('resize', onDismiss)
+    }
+  }, [tabContextMenu])
+
+  useEffect(() => {
     const root = contentRef.current
     if (!root) return
 
@@ -1387,12 +1602,17 @@ export default function App(): React.JSX.Element {
     directory: '',
   }
 
+  const contextMenuTabIndex = tabContextMenu
+    ? tabs.findIndex((tab) => tab.id === tabContextMenu.tabId)
+    : -1
+
   return (
     <div
       className="app-shell"
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
         event.preventDefault()
+        if (draggingTabIdRef.current) return
         void handleDrop(event.dataTransfer)
       }}
     >
@@ -1444,7 +1664,10 @@ export default function App(): React.JSX.Element {
         <div ref={recentMenuRef} className="recent-nav">
           <button
             className={`recent-toggle${recentOpen ? ' active' : ''}`}
-            onClick={() => setRecentOpen((open) => !open)}
+            onClick={() => {
+              setTabContextMenu(null)
+              setRecentOpen((open) => !open)
+            }}
             aria-expanded={recentOpen}
             aria-label="Recent files"
             title="Recent files"
@@ -1466,18 +1689,40 @@ export default function App(): React.JSX.Element {
           )}
         </div>
 
-        <div className="tabs-strip" role="tablist" aria-label="Open Markdown files">
+        <div
+          className="tabs-strip"
+          role="tablist"
+          aria-label="Open Markdown files"
+          onDragOver={handleTabStripDragOver}
+          onDrop={handleTabStripDrop}
+        >
           {tabs.map((tab) => {
             const isActive = tab.id === activeTabId
+            const isDragging = tab.id === draggingTabId
+            const dropPos = tabDropTarget?.tabId === tab.id ? tabDropTarget.position : null
+            const tabClassName = [
+              'tab-item',
+              isActive ? 'active' : '',
+              isDragging ? 'dragging' : '',
+              dropPos === 'before' ? 'drop-before' : '',
+              dropPos === 'after' ? 'drop-after' : '',
+            ].filter(Boolean).join(' ')
+
             return (
               <div
                 key={tab.id}
                 role="tab"
                 tabIndex={0}
+                draggable
                 aria-selected={isActive}
-                className={`tab-item${isActive ? ' active' : ''}`}
+                className={tabClassName}
                 title={tab.name}
                 onClick={() => selectTab(tab.id)}
+                onContextMenu={(event) => openTabContextMenu(event, tab.id)}
+                onDragStart={(event) => handleTabDragStart(event, tab.id)}
+                onDragOver={(event) => handleTabDragOver(event, tab.id)}
+                onDrop={(event) => handleTabDrop(event, tab.id)}
+                onDragEnd={handleTabDragEnd}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') selectTab(tab.id)
                 }}
@@ -1497,6 +1742,76 @@ export default function App(): React.JSX.Element {
             )
           })}
         </div>
+
+        {tabContextMenu && contextMenuTabIndex >= 0 && (
+          <div
+            ref={tabContextMenuRef}
+            className="tab-context-menu"
+            role="menu"
+            aria-label="Tab actions"
+            style={{ left: `${tabContextMenu.x}px`, top: `${tabContextMenu.y}px` }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="tab-context-item"
+              onClick={() => {
+                closeTab(tabContextMenu.tabId)
+                setTabContextMenu(null)
+              }}
+            >
+              关闭
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="tab-context-item"
+              disabled={tabs.length <= 1}
+              onClick={() => {
+                closeOtherTabs(tabContextMenu.tabId)
+                setTabContextMenu(null)
+              }}
+            >
+              关闭其他
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="tab-context-item"
+              disabled={contextMenuTabIndex <= 0}
+              onClick={() => {
+                closeTabsToLeft(tabContextMenu.tabId)
+                setTabContextMenu(null)
+              }}
+            >
+              关闭左侧
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="tab-context-item"
+              disabled={contextMenuTabIndex >= tabs.length - 1}
+              onClick={() => {
+                closeTabsToRight(tabContextMenu.tabId)
+                setTabContextMenu(null)
+              }}
+            >
+              关闭右侧
+            </button>
+            <div className="tab-context-divider" role="separator" />
+            <button
+              type="button"
+              role="menuitem"
+              className="tab-context-item"
+              onClick={() => {
+                closeAllTabs()
+                setTabContextMenu(null)
+              }}
+            >
+              关闭全部
+            </button>
+          </div>
+        )}
       </div>
 
       {sidebarOpen && <button className="backdrop mobile-only" aria-label="Close outline" onClick={() => setSidebarOpen(false)} />}
