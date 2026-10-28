@@ -23,6 +23,8 @@ button { color: inherit; }
   overflow-y: auto;
   border-right: 1px solid #d8dee4;
   background: #f6f8fa;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .sidebar-header {
   position: sticky;
@@ -96,6 +98,8 @@ button { color: inherit; }
   border-bottom: 1px solid #d8dee4;
   background: rgba(246, 248, 250, .96);
   backdrop-filter: blur(12px);
+  user-select: none;
+  -webkit-user-select: none;
 }
 .recent-nav { position: relative; flex: 0 0 auto; border-right: 1px solid #d8dee4; }
 .recent-toggle {
@@ -214,6 +218,8 @@ button { color: inherit; }
   color: #0969da;
   font-size: 13px;
   line-height: 1.45;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .local-assets-banner-info {
   display: flex;
@@ -239,7 +245,15 @@ button { color: inherit; }
   background: #0860ca;
   border-color: #0860ca;
 }
-.markdown-body { max-width: 920px; margin: 0 auto; font-size: 16px; line-height: 1.7; overflow-wrap: break-word; }
+.markdown-body {
+  max-width: 920px;
+  margin: 0 auto;
+  font-size: 16px;
+  line-height: 1.7;
+  overflow-wrap: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
 .markdown-body > :first-child { margin-top: 0 !important; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 {
   position: relative;
@@ -255,7 +269,16 @@ button { color: inherit; }
 .markdown-body h4 { font-size: 1em; }
 .markdown-body h5 { font-size: .875em; }
 .markdown-body h6 { color: #57606a; font-size: .85em; }
-.heading-anchor { position: absolute; right: 100%; padding-right: 8px; color: #0969da; text-decoration: none; opacity: 0; }
+.heading-anchor {
+  position: absolute;
+  right: 100%;
+  padding-right: 8px;
+  color: #0969da;
+  text-decoration: none;
+  opacity: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
 .markdown-body h1:hover .heading-anchor, .markdown-body h2:hover .heading-anchor, .markdown-body h3:hover .heading-anchor, .markdown-body h4:hover .heading-anchor { opacity: 1; }
 
 .markdown-body p, .markdown-body blockquote, .markdown-body ul, .markdown-body ol, .markdown-body dl, .markdown-body table, .markdown-body pre, .markdown-body details { margin-top: 0; margin-bottom: 16px; }
@@ -272,7 +295,18 @@ button { color: inherit; }
 .markdown-body :not(pre) > code { padding: .2em .4em; border-radius: 6px; background: rgba(175, 184, 193, .2); font: 85% ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .code-block { margin: 0 0 16px; overflow: hidden; border: 1px solid #d8dee4; border-radius: 8px; background: #f6f8fa; }
-.code-toolbar { height: 36px; display: flex; align-items: center; justify-content: space-between; padding: 0 8px 0 12px; border-bottom: 1px solid #d8dee4; color: #57606a; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.code-toolbar {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid #d8dee4;
+  color: #57606a;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  user-select: none;
+  -webkit-user-select: none;
+}
 .copy-code { border: 0; border-radius: 5px; padding: 4px 8px; background: transparent; color: #57606a; cursor: pointer; font: inherit; }
 .copy-code:hover { background: #eaeef2; color: #1f2328; }
 .code-block pre { margin: 0; padding: 16px; overflow: auto; background: #f6f8fa; }
@@ -313,7 +347,7 @@ button { color: inherit; }
 .front-matter > summary::-webkit-details-marker { display: none; }
 .front-matter > summary::before { content: "\25B8"; color: #8c959f; transition: transform .12s ease; }
 .front-matter[open] > summary::before { transform: rotate(90deg); }
-.fm-label { color: #57606a; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.fm-label { color: #57606a; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; user-select: none; -webkit-user-select: none; }
 .fm-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
 .fm-note { color: #cf222e; font-size: 12px; }
 .fm-body { padding: 0 14px 14px; }
@@ -360,11 +394,13 @@ button { color: inherit; }
   background: rgba(246, 248, 250, .92);
   cursor: pointer;
   backdrop-filter: blur(10px);
+  user-select: none;
+  -webkit-user-select: none;
 }
 .icon-button:hover, .outline-toggle:hover { background: #eef1f4; }
 .outline-toggle { position: fixed; z-index: 40; top: 48px; left: 12px; }
 .mobile-only { display: none; }
-.backdrop { border: 0; }
+.backdrop { border: 0; user-select: none; -webkit-user-select: none; }
 
 @media (max-width: 760px) {
   .mobile-only { display: inline-flex; }
@@ -381,7 +417,7 @@ button { color: inherit; }
   .tab-item { min-width: 96px; max-width: 170px; }
 }
 
-@media (prefers-color-scheme: dark) {
+@media screen and (prefers-color-scheme: dark) {
   :root { color: #e6edf3; background: #0d1117; }
   body { background: #0d1117; }
   .sidebar, .sidebar-header { background: #161b22; border-color: #30363d; }
@@ -427,4 +463,78 @@ button { color: inherit; }
   .fm-bool { color: #79c0ff; }
   .fm-number { color: #a5d6ff; }
   .fm-empty { color: #6e7681; }
+}
+
+@media print {
+  @page {
+    margin: 16mm 14mm;
+  }
+
+  :root, body {
+    color: #1f2328 !important;
+    background: #fff !important;
+  }
+
+  .sidebar,
+  .tabbar,
+  .outline-toggle,
+  .backdrop,
+  .local-assets-banner,
+  .heading-anchor,
+  .copy-code {
+    display: none !important;
+  }
+
+  .app-shell {
+    min-height: 0;
+  }
+
+  .viewer {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .markdown-body {
+    max-width: 100% !important;
+    margin: 0 !important;
+    font-size: 14px;
+  }
+
+  .markdown-body h1,
+  .markdown-body h2,
+  .markdown-body h3,
+  .markdown-body h4,
+  .markdown-body h5,
+  .markdown-body h6 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  .markdown-body pre,
+  .markdown-body blockquote,
+  .markdown-body img,
+  .markdown-body .code-block,
+  .markdown-body .mermaid,
+  .markdown-body .front-matter,
+  .markdown-body tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .code-block pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow: visible;
+  }
+
+  .markdown-body table {
+    display: table;
+    width: 100%;
+    overflow: visible;
+  }
+
+  .katex-display,
+  .mermaid {
+    overflow: visible;
+  }
 }

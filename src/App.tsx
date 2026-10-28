@@ -155,16 +155,34 @@ const buildLocalImagePlaceholder = (
 }
 
 const darkSchemeQuery = (): MediaQueryList => window.matchMedia('(prefers-color-scheme: dark)')
+const printMediaQuery = (): MediaQueryList => window.matchMedia('print')
 
 function usePrefersDark(): boolean {
-  const [prefersDark, setPrefersDark] = useState<boolean>(() => darkSchemeQuery().matches)
+  const [prefersDark, setPrefersDark] = useState<boolean>(
+    () => darkSchemeQuery().matches && !printMediaQuery().matches,
+  )
 
   useEffect(() => {
-    const query = darkSchemeQuery()
-    const onChange = (event: MediaQueryListEvent): void => setPrefersDark(event.matches)
-    query.addEventListener('change', onChange)
-    setPrefersDark(query.matches)
-    return () => query.removeEventListener('change', onChange)
+    const darkQuery = darkSchemeQuery()
+    const printQuery = printMediaQuery()
+    const sync = (): void => {
+      setPrefersDark(darkQuery.matches && !printQuery.matches)
+    }
+    const onBeforePrint = (): void => setPrefersDark(false)
+    const onAfterPrint = (): void => sync()
+
+    darkQuery.addEventListener('change', sync)
+    printQuery.addEventListener('change', sync)
+    window.addEventListener('beforeprint', onBeforePrint)
+    window.addEventListener('afterprint', onAfterPrint)
+    sync()
+
+    return () => {
+      darkQuery.removeEventListener('change', sync)
+      printQuery.removeEventListener('change', sync)
+      window.removeEventListener('beforeprint', onBeforePrint)
+      window.removeEventListener('afterprint', onAfterPrint)
+    }
   }, [])
 
   return prefersDark
